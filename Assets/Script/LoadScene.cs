@@ -7,7 +7,7 @@ public class LoadScene : MonoBehaviour
 {
     public void ChangeScene(string scene) 
     {
-        SceneManager.LoadScene(scene);
+        SceneManager.LoadScene(1);
     }
 
     public void quitGame()
