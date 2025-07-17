@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using TMPro;
 
 public class PlayerMovement : MonoBehaviour
 {
@@ -13,19 +14,30 @@ public class PlayerMovement : MonoBehaviour
     private Rigidbody2D rb;
     private Animator anim;
     private SpriteRenderer sprite;
-    private PlayerController playerController; // tambahkan PlayerInputActions
+    private PlayerController playerController;
 
-    // Untuk input dari button UI
     private float mobileInputX = 0f;
-
     private Vector2 moveInput;
-    private bool isJumping = false;
 
-    private enum MovementState { idle, walk, jump, fall, run}
+    private enum MovementState { idle, walk, jump, fall, run }
 
     [Header("Jump Settings")]
     [SerializeField] private LayerMask jumpableGround;
     private BoxCollider2D coll;
+
+    [Header("Health System")]
+    public int maxHealth = 100;
+    private int currentHealth;
+    public TextMeshProUGUI healthText;
+
+    [Header("Coin System")]
+    public int currentCoin = 0;
+    public TextMeshProUGUI coinText;
+
+    [Header("Knockback Settings")]
+    [SerializeField] private float knockBackTime = 0.2f;
+    [SerializeField] private float knockBackThrust = 10f;
+    private bool isKnockedBack = false;
 
     private void Awake()
     {
@@ -33,66 +45,57 @@ public class PlayerMovement : MonoBehaviour
         anim = GetComponent<Animator>();
         sprite = GetComponent<SpriteRenderer>();
         coll = GetComponent<BoxCollider2D>();
+        currentHealth = maxHealth;
+        UpdateHealthUI();
 
-        playerController = new PlayerController(); //Inisialisasi PlayerInputActions
+        playerController = new PlayerController();
     }
 
     private void OnEnable()
     {
         playerController.Enable();
-
-        playerController.Movement.Move.performed += ctx => moveInput = ctx.ReadValue<Vector2>();
+        playerController.Movement.Move.performed += OnMove;
         playerController.Movement.Move.canceled += ctx => moveInput = Vector2.zero;
-
         playerController.Movement.Jump.performed += ctx => Jump();
-
-        
     }
 
     private void OnDisable()
     {
         playerController.Disable();
+        playerController.Movement.Move.performed -= OnMove;
+        playerController.Movement.Move.canceled -= ctx => moveInput = Vector2.zero;
+        playerController.Movement.Jump.performed -= ctx => Jump();
+    }
+
+    private void OnMove(InputAction.CallbackContext ctx)
+    {
+        moveInput = ctx.ReadValue<Vector2>();
     }
 
     private void Update()
     {
-        // Jika menggunakan mobile input, pakai itu
         if (Application.isMobilePlatform)
         {
             moveInput = new Vector2(mobileInputX, 0f);
         }
-        else
-        {
-            // Kalau bukan mobile, pakai Input System
-            moveInput = playerController.Movement.Move.ReadValue<Vector2>();
-        }
-
     }
 
     private void FixedUpdate()
     {
-        //gabungan mobile
-        Vector2 targetVelocity = new Vector2((moveInput.x + mobileInputX) * moveSpeed, rb.velocity.y);
+        if (isKnockedBack) return;
+
+        float currentMoveSpeed = moveSpeed;
+        Vector2 targetVelocity = new Vector2((moveInput.x + mobileInputX) * currentMoveSpeed, rb.velocity.y);
         rb.velocity = targetVelocity;
 
         UpdateAnimation();
-
-        // Reset isJumping hanya saat grounded dan velocity Y mendekati 0
-        if (isGrounded() && Mathf.Abs(rb.velocity.y) < 0.01f)
-        {
-            isJumping = false;
-        }
-
     }
 
     private void UpdateAnimation()
     {
         MovementState state;
-
-        // Gabungkan input dari keyboard dan mobile
         float horizontal = moveInput.x != 0 ? moveInput.x : mobileInputX;
 
-        // Cek arah jalan
         if (horizontal > 0f)
         {
             state = MovementState.walk;
@@ -108,7 +111,6 @@ public class PlayerMovement : MonoBehaviour
             state = MovementState.idle;
         }
 
-        // Cek apakah sedang lompat atau jatuh
         if (rb.velocity.y > 0.1f)
         {
             state = MovementState.jump;
@@ -121,7 +123,6 @@ public class PlayerMovement : MonoBehaviour
         anim.SetInteger("state", (int)state);
     }
 
-
     private bool isGrounded()
     {
         return Physics2D.BoxCast(coll.bounds.center, coll.bounds.size, 0f, Vector2.down, .1f, jumpableGround);
@@ -129,37 +130,103 @@ public class PlayerMovement : MonoBehaviour
 
     private void Jump()
     {
-        // Cek ulang grounded saat ini, dan jangan gunakan isJumping (karena bisa delay)
         if (isGrounded())
         {
             rb.velocity = new Vector2(rb.velocity.x, jumpForce);
-            isJumping = true;
         }
     }
 
-    // Fungsi ini dipanggil saat tombol kanan ditekan
     public void MoveRight(bool isPressed)
     {
-        if (isPressed)
-            mobileInputX = 1f;
-        else if (mobileInputX == 1f)
-            mobileInputX = 0f;
+        mobileInputX = isPressed ? 1f : (mobileInputX == 1f ? 0f : mobileInputX);
     }
 
     public void MoveLeft(bool isPressed)
     {
-        if (isPressed)
-            mobileInputX = -1f;
-        else if (mobileInputX == -1f)
-            mobileInputX = 0f;
+        mobileInputX = isPressed ? -1f : (mobileInputX == -1f ? 0f : mobileInputX);
     }
 
-    // Fungsi ini dipanggil saat tombol lompat ditekan
     public void MobileJump()
     {
-        if (isGrounded())
+        Jump();
+    }
+
+    private void UpdateHealthUI()
+    {
+        if (healthText != null)
         {
-            Jump();
+            healthText.text = "Health: " + currentHealth.ToString();
+        }
+    }
+
+    public void TakeDamage(int damage)
+    {
+        currentHealth -= damage;
+        UpdateHealthUI();
+
+        if (currentHealth <= 0)
+        {
+            Die();
+        }
+    }
+
+    public void TakeDamage(int damage, Vector2 direction)
+    {
+        if (isKnockedBack) return;
+
+        currentHealth -= damage;
+        if (currentHealth <= 0)
+        {
+            currentHealth = 0;
+            Debug.Log("Player Mati");
+        }
+
+        StartCoroutine(HandleKnockback(direction.normalized));
+        UpdateHealthUI();
+    }
+
+    private void Die()
+    {
+        Debug.Log("Player died");
+        // Tambahkan animasi dan reset/restart scene
+    }
+
+    public void ApplyKnockback(Vector2 direction)
+    {
+        if (!isKnockedBack)
+        {
+            StartCoroutine(KnockbackRoutine(direction));
+        }
+    }
+
+    private IEnumerator KnockbackRoutine(Vector2 direction)
+    {
+        isKnockedBack = true;
+        rb.velocity = Vector2.zero;
+        rb.AddForce(direction * knockBackThrust, ForceMode2D.Impulse);
+        yield return new WaitForSeconds(knockBackTime);
+        isKnockedBack = false;
+    }
+
+    private IEnumerator HandleKnockback(Vector2 direction)
+    {
+        isKnockedBack = true;
+        rb.velocity = Vector2.zero;
+
+        Vector2 force = direction * knockBackThrust * rb.mass;
+        rb.AddForce(force, ForceMode2D.Impulse);
+
+        yield return new WaitForSeconds(knockBackTime);
+        rb.velocity = Vector2.zero;
+        isKnockedBack = false;
+    }
+
+    public void AddCoin(int amount)
+    {
+        currentCoin += amount;
+        if (coinText != null)
+        {
+            coinText.text = "Coin : " + currentCoin.ToString();
         }
     }
 }
